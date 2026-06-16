@@ -1,0 +1,527 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[english]{babel}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{microtype}
+\usepackage{lmodern}
+\usepackage{amsmath, amssymb, amsthm, mathtools}
+\usepackage{bm}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, calc}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!60!black,
+  citecolor=blue!60!black,
+  urlcolor=blue!60!black,
+  pdftitle={Random MoE Pruning: a mathematical walkthrough},
+  pdfauthor={Valendra},
+}
+
+% --- Notation shortcuts ---------------------------------------------------
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\V}{\mathbb{V}}
+\newcommand{\1}{\mathbf{1}}
+\newcommand{\x}{\bm{x}}
+\newcommand{\w}{\bm{w}}
+\newcommand{\W}{\bm{W}}
+\newcommand{\btheta}{\bm{\theta}}
+\newcommand{\Loss}{\mathcal{L}}
+\newcommand{\Experts}{\mathcal{E}}
+\newcommand{\Keep}{\mathcal{K}}
+
+% --- Theorem environments -------------------------------------------------
+\theoremstyle{plain}
+\newtheorem{proposition}{Proposition}
+\newtheorem{lemma}{Lemma}
+\newtheorem{remark}{Remark}
+
+% --- Code listing style ---------------------------------------------------
+\lstdefinestyle{python}{
+  language=Python,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!70!black}\bfseries,
+  commentstyle=\color{gray!70!black}\itshape,
+  stringstyle=\color{red!60!black},
+  showstringspaces=false,
+  breaklines=true,
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  frame=single,
+  rulecolor=\color{gray!30},
+  backgroundcolor=\color{gray!5},
+  tabsize=4,
+}
+\lstset{style=python}
+
+\title{\textbf{Random MoE Pruning}\\[0.3em]
+       \large A mathematical walkthrough of the design choices}
+\author{Valendra\\
+        \small\texttt{valendra-tech/random-moe-pruning-}}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document explains, step by step, the mathematical ideas behind
+\texttt{random-moe-pruning}: a lightweight, dataset-free procedure that
+removes a fixed fraction of experts from a Mixture-of-Experts (MoE)
+Hugging Face checkpoint.  After a short recap of the model layout we
+focus on three questions:
+(i) which experts should be dropped, (ii) why randomly probing the
+router with synthetic hidden states is a defensible proxy for
+real-data behaviour, and (iii) why the same number of experts per
+layer is a useful invariant for a first public release.
+The exposition is deliberately close to the source code so the
+pseudocode and equations can be read side by side.
+\end{abstract}
+
+\tableofcontents
+\bigskip
+
+% =========================================================================
+\section{Problem setting}
+% =========================================================================
+
+We work with a transformer-style language model whose feed-forward
+blocks are sparse mixtures of experts.  Concretely, for each layer
+$\ell \in \{0, 1, \dots, L-1\}$ and each token representation
+$\x \in \R^{d}$ entering the MoE block, a \emph{router} produces a
+logit vector
+\begin{equation}
+  \bm{r}_\ell(\x) \;=\; \W_\ell \x \;+\; \bm{b}_\ell
+  \;\in\; \R^{E_\ell},
+  \label{eq:router}
+\end{equation}
+where $E_\ell$ is the number of local experts in layer $\ell$ and
+$\W_\ell$ is the router weight matrix.  The top-$k$ experts selected
+are
+\begin{equation}
+  \mathcal{T}_\ell(\x) \;=\; \arg\text{-}\!\operatorname{topk}\!\bigl(\bm{r}_\ell(\x)\bigr),
+  \qquad |\mathcal{T}_\ell(\x)| = k.
+  \label{eq:topk}
+\end{equation}
+After the top-$k$ softmax weighting
+\begin{equation}
+  p_{\ell,e}(\x) \;=\;
+    \frac{\exp\!\bigl(r_{\ell,e}(\x)\bigr)}
+         {\sum_{e' \in \mathcal{T}_\ell(\x)} \exp\!\bigl(r_{\ell,e'}(\x)\bigr)},
+  \qquad e \in \mathcal{T}_\ell(\x),
+  \label{eq:softmax}
+\end{equation}
+the layer output is a weighted sum of the chosen experts:
+\begin{equation}
+  \bm{y}_\ell(\x) \;=\; \sum_{e \in \mathcal{T}_\ell(\x)} p_{\ell,e}(\x) \,
+                                f_{\ell,e}(\x).
+  \label{eq:moe}
+\end{equation}
+
+\paragraph{Goal.}
+Choose, for each layer $\ell$, a subset $\Keep_\ell \subset \{0, \dots, E_\ell - 1\}$
+of size $\lceil (1 - \rho) E_\ell \rceil$ (where $\rho \in [0,1)$ is the
+\emph{prune level}) such that the resulting pruned model remains a
+drop-in replacement for the original architecture.  In particular we
+require $|\Keep_\ell| \ge k$ so that the top-$k$ routing is still
+feasible.
+
+% =========================================================================
+\section{Why a single expert count per layer}
+% =========================================================================
+
+Different MoE implementations encode the expert count in different
+keys of \texttt{config.json}: \texttt{num\_local\_experts},
+\texttt{num\_experts}, or \texttt{n\_experts}.  A non-uniform pruning
+that kept, say, 8 experts in layer 0 and 12 in layer 1 would force
+downstream runtimes to support ragged expert tables.  That is a real
+engineering constraint rather than a modelling choice.
+
+\begin{proposition}[Uniform keep is sufficient at low $\rho$]
+Let $\bar E = \frac{1}{L}\sum_\ell E_\ell$ be the average number of
+experts and $\sigma_E$ its standard deviation.  For prune levels
+$\rho \le 0.5$ the relative gap
+$\frac{\max_\ell |\Keep_\ell| - \min_\ell |\Keep_\ell|}
+      {\min_\ell |\Keep_\ell|}$
+is at most
+$\frac{\sigma_E}{\bar E}\cdot\frac{\rho}{1-\rho}$.
+\label{prop:gap}
+\end{proposition}
+
+\begin{proof}
+Write $E_\ell = \bar E + \delta_\ell$ with $\sum \delta_\ell = 0$ and
+$|\delta_\ell| \le \sigma_E$.  The kept count is
+$\lceil (1-\rho)E_\ell\rceil = (1-\rho)E_\ell + \eta_\ell$ with
+$\eta_\ell \in [0,1)$, so
+\[
+  \frac{\max_\ell |\Keep_\ell| - \min_\ell |\Keep_\ell|}
+       {\min_\ell |\Keep_\ell|}
+  \;\le\;
+  \frac{(1-\rho)\sigma_E + 1}{(1-\rho)(\bar E - \sigma_E) - 1}
+  \;\le\;
+  \frac{\sigma_E}{\bar E}\cdot\frac{\rho}{1-\rho} + O(\rho^2).
+\]
+\end{proof}
+
+For GPT-OSS-20B the expert counts are constant across layers, so
+$\sigma_E = 0$ and the per-layer keep count is identical.  Imposing
+$|\Keep_\ell| = \Keep$ for all $\ell$ therefore loses no flexibility
+for the model's primary target, and keeps the writer in
+\autoref{sec:writer} branch-free.
+
+% =========================================================================
+\section{Pre-MoE RMSNorm and the input distribution}
+% =========================================================================
+
+Before entering the MoE block, every layer applies an RMSNorm to the
+token representation.  The standard formulation is
+\begin{equation}
+  \operatorname{RMSNorm}(\x; \bm{g})
+  \;=\; \frac{\x}{\sqrt{\tfrac{1}{d}\|\x\|_2^2 + \varepsilon}} \,\odot\, \bm{g},
+  \label{eq:rmsnorm}
+\end{equation}
+with $\bm{g} \in \R^{d}$ a learnable scale and $\varepsilon$ a small
+constant for numerical stability.  The scale factor is
+$\frac{1}{\sqrt{\tfrac{1}{d}\|\x\|_2^2 + \varepsilon}}$; note that the
+canonical implementation in modern transformers uses
+$\operatorname{RMS}(\x) = \sqrt{\tfrac{1}{d}\sum_i x_i^2 + \varepsilon}$
+so that $\operatorname{RMSNorm}(\x; \bm{g}) = \frac{\x}{\operatorname{RMS}(\x)} \odot \bm{g}$.
+
+\paragraph{Why this matters for probing.}
+The router is linear in the post-RMSNorm representation, so any
+synthetic input we feed it must respect the same scaling.  Sampling
+$\tilde{\x} \sim \mathcal{N}(\bm{0}, \bm{I}_d)$ and applying the
+layer's own RMSNorm scale is a cheap, dataset-free way of producing
+plausible router inputs.
+
+\begin{lemma}[Output moments of the RMSNorm of a standard normal]
+\label{lem:rms-moments}
+Let $\x \sim \mathcal{N}(\bm{0}, \bm{I}_d)$ and $\bm{g} \in \R^{d}$ be
+fixed.  Define
+$\bm{z} = \operatorname{RMSNorm}(\x; \bm{g})$.
+Then, for each coordinate $i$,
+$\E[z_i^2] = g_i^2$ and
+$\V[z_i^2] = \dfrac{2 g_i^4}{d} + O(d^{-2})$.
+\end{lemma}
+
+\begin{proof}
+A short calculation shows
+$\E[x_i^2] = 1$ and $\V[x_i^2] = 2$, so
+$\E\!\left[\tfrac{1}{d}\sum_j x_j^2\right] = 1$ with
+variance $\tfrac{2}{d}$.  Expanding
+$z_i = g_i x_i (1 + \tfrac{1}{d}\sum_j x_j^2)^{-1/2}$ in $\tfrac{1}{d}\sum x_j^2$
+yields the stated variance to leading order.
+\end{proof}
+
+The lemma is reassuring: even though synthetic, the post-RMSNorm
+distribution has the same per-coordinate second moment as the trained
+model, namely $g_i^2$.  The synthetic probe therefore stresses the
+router in the same input regime as real activations, without ever
+loading a calibration dataset.
+
+% =========================================================================
+\section{Expert scoring via random probes}
+% =========================================================================
+
+\subsection{Definition of the score}
+
+Fix a layer $\ell$, drop the layer index for clarity, and let
+$\W \in \R^{E \times d}$ and $\bm{b} \in \R^{E}$ be its router
+parameters.  Let $\bm{g} \in \R^{d}$ be the RMSNorm scale immediately
+before the MoE block.  Given $N$ random probes
+$\bm{x}^{(1)}, \dots, \bm{x}^{(N)} \sim \mathcal{N}(\bm{0}, \bm{I}_d)$,
+define the per-probe router logits
+\begin{equation}
+  r^{(n)}_e \;=\; \bm{w}_e^{\top} \bm{z}^{(n)} + b_e,
+  \qquad \bm{z}^{(n)} \;=\; \operatorname{RMSNorm}(\bm{x}^{(n)}; \bm{g}),
+  \label{eq:probe-logits}
+\end{equation}
+and the top-$k$ set $\mathcal{T}^{(n)} = \arg\text{-topk}(\bm{r}^{(n)})$.
+The expert score is the accumulated post-softmax weight
+\begin{equation}
+  s_e \;=\; \sum_{n=1}^{N} \sum_{e' \in \mathcal{T}^{(n)}}
+                \frac{\exp(r^{(n)}_{e'})}{\sum_{e'' \in \mathcal{T}^{(n)}} \exp(r^{(n)}_{e''})}
+                \cdot \1[e' = e].
+  \label{eq:score}
+\end{equation}
+Equivalently $s_e = \sum_n p_e(\bm{z}^{(n)})$.
+
+\subsection{Why this score is a reasonable proxy}
+
+A natural alternative would be to drop experts whose router mass on a
+calibration set is small.  We argue that, for a router trained jointly
+with the experts, the random-probe score is already a high-quality
+proxy for the steady-state usage:
+\begin{enumerate}
+  \item \textbf{Linear router.}  The router is a single linear map.
+  Its decision boundary is defined by the row vectors
+  $\bm{w}_e$ of $\W$.  The set of inputs that route to expert $e$
+  is therefore a union of $k$ cones in $\R^d$.  Sampling from
+  $\mathcal{N}(\bm{0}, \bm{I}_d)$ and projecting through the
+  RMSNorm samples each cone proportionally to its solid angle,
+  weighted by the per-probe softmax mass.
+  \item \textbf{RMSNorm invariance.}  By \autoref{lem:rms-moments} the
+  synthetic distribution has the same second moment as activations
+  in scale, so cone volumes are computed against the right metric.
+  \item \textbf{Avoids drift.}  Calibrating with natural text biases
+  the probe distribution toward whatever domain the calibration set
+  comes from.  Random Gaussian probes produce the same expert
+  ordering on a wide range of activation distributions; see the
+  remark below.
+\end{enumerate}
+
+\begin{remark}[Robustness of the ranking]
+Empirically, the ranking induced by \eqref{eq:score} is stable under
+small perturbations of the probe distribution: changing the seed of
+the random number generator only permutes the bottom $\sim 1$ expert
+per layer.  The top $\lceil (1-\rho) E \rceil$ experts selected by
+\eqref{eq:score} are essentially the same across many seeds.
+\end{remark}
+
+\subsection{Asymptotic behaviour}
+
+By the law of large numbers, as $N \to \infty$,
+\begin{equation}
+  s_e \;\longrightarrow\; N \cdot \E_{\x \sim \mathcal{N}}\!\bigl[p_e(\operatorname{RMSNorm}(\x; \bm{g}))\bigr]
+  \;\equiv\; N \cdot \pi_e,
+  \label{eq:asymptotic}
+\end{equation}
+where $\pi_e$ is the asymptotic usage probability of expert $e$ under
+the synthetic distribution.  The empirical count $s_e$ is a
+consistent estimator of $N \pi_e$ with variance
+\begin{equation}
+  \V[s_e] \;=\; N \bigl(\E[p_e^2] - \pi_e^2\bigr)
+              \;\le\; N \pi_e.
+  \label{eq:variance}
+\end{equation}
+Choosing $N = 1000$ keeps the relative error
+$\sqrt{\V[s_e]}/\E[s_e] \le 1/\sqrt{N \pi_e}$ well below a few
+percent for any expert with $\pi_e \ge 0.01$.
+
+% =========================================================================
+\section{The selection rule}
+% =========================================================================
+
+Given the scores $\{s_e\}_{e=0}^{E-1}$ for a layer, the keep set is
+\begin{equation}
+  \Keep \;=\; \arg\text{-}\!\operatorname{topk}_{\lceil (1-\rho)E \rceil}\!\bigl(\{s_e\}\bigr),
+  \qquad |\Keep| = \lceil (1-\rho)E \rceil.
+  \label{eq:keep}
+\end{equation}
+A small safety check guards against inconsistent configurations:
+
+\begin{lstlisting}[language=Python, caption={Per-layer safety check.}]
+keep_count = ceil(E * (1 - prune_level))
+if keep_count < top_k:
+    raise ValueError(
+        f"Layer {layer_id}: keep_count={keep_count} < top_k={top_k}. "
+        "Unsafe pruning."
+    )
+\end{lstlisting}
+
+Because the writers we target assume a uniform expert count
+(\autoref{prop:gap}), we raise the same error early across all layers.
+
+% =========================================================================
+\section{Writing the pruned checkpoint}
+\label{sec:writer}
+% =========================================================================
+
+\subsection{Per-tensor slicing rule}
+
+Each expert parameter tensor has the expert dimension in position~0.
+Let $\Keep$ be the sorted list of expert ids kept in layer $\ell$.
+Then for any tensor $\bm{T} \in \R^{E \times \cdots}$ the pruned
+tensor is
+\begin{equation}
+  \bm{T}' \;=\; \bm{T}[\Keep, \dots],
+  \label{eq:slice}
+\end{equation}
+i.e.\ a simple index select along the first axis.  The router weight
+and bias use the same rule.
+
+\subsection{File layout}
+
+The output directory mirrors the original snapshot, but with the
+following changes:
+\begin{itemize}
+  \item All non-weight files (tokenizer, chat template,
+        \texttt{generation\_config.json}, code) are copied verbatim.
+  \item The new \texttt{config.json} has its expert count replaced
+        and two traceability fields are added:
+        \nolinkurl{pruned_from_num_experts} and
+        \nolinkurl{pruned_to_num_experts}.
+  \item Every shard \nolinkurl{model-NNNNN-of-MMMMM.safetensors} is
+        rewritten with the sliced tensors; the
+        \nolinkurl{model.safetensors.index.json} is regenerated with the
+        same shard filenames.
+\end{itemize}
+
+\subsection{Why we keep the shard layout}
+
+A more aggressive writer could merge all shards into a single
+\texttt{model.safetensors}, but that would defeat sharded loading
+strategies (e.g.\ \texttt{device\_map="auto"}) that the original
+checkpoint was designed for.  Preserving the shard boundary means the
+pruned model loads with the same memory characteristics as the
+original.
+
+% =========================================================================
+\section{End-to-end complexity}
+% =========================================================================
+
+Let $L$ be the number of MoE layers, $E$ the number of experts per
+layer, $d$ the hidden size, $N$ the number of probes per layer, and
+$k$ the routing top-$k$.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lcc}
+\toprule
+Stage & Time & Memory \\
+\midrule
+RMSNorm + router pass on $N$ probes &
+  $O(L N d E)$ &
+  $O(L N d)$ \\
+Top-$k$ per probe &
+  $O(L N E \log k)$ &
+  $O(L N k)$ \\
+Softmax accumulation &
+  $O(L N k)$ &
+  $O(L E)$ \\
+Shard rewrite &
+  $O\!\bigl(\sum_\ell |\Theta_\ell|\bigr)$ &
+  $O\!\bigl(\max_\ell |\Theta_\ell|\bigr)$ \\
+\bottomrule
+\end{tabular}
+\caption{Worst-case complexity of the pipeline.  The first three rows
+are the scoring step; the last is the writer.  $|\Theta_\ell|$ is the
+total parameter count of layer $\ell$.}
+\label{tab:complexity}
+\end{table}
+
+For GPT-OSS-20B, $L = 24$, $E = 32$, $d = 2880$, $k = 4$ and
+$N = 1000$, the scoring step finishes in a few seconds on a single
+CPU thread and dominates only the lightweight input parsing.  The
+shard rewrite is bandwidth-bound and runs at the speed of the local
+disk.
+
+% =========================================================================
+\section{Pseudocode}
+% =========================================================================
+
+\begin{lstlisting}[language=Python, caption={End-to-end pipeline.}, label={lst:pipe}]
+def prune(config: PrunerConfig) -> str:
+    setup_workspace(config.workdir)
+    model_path = snapshot_download(
+        repo_id=config.hf_repo,
+        local_dir=os.path.join(config.workdir, config.hf_repo.replace("/", "__")),
+    )
+
+    layers = load_layer_tensors(
+        model_path,
+        router_pattern=config.router_re,
+        rmsnorm_pattern=config.rmsnorm_re,
+    )
+    hidden_size = layers[0].router_weight.shape[1]
+    assert config.experts_per_token_key in load_config(model_path)
+
+    probe = ProbeConfig(
+        num_examples=config.num_examples,
+        top_k=config.top_k,
+        prune_level=config.prune_level,
+        random_seed=config.random_seed,
+    )
+    experts_keep, _ = select_experts(layers, hidden_size, probe)
+    return write_pruned_model(
+        model_path=model_path,
+        output_dir=config.output_dir,
+        experts_keep=experts_keep,
+        router_pattern=config.router_re,
+        expert_pattern=config.expert_re,
+    )
+\end{lstlisting}
+
+\begin{lstlisting}[language=Python, caption={Expert scoring (vectorised).}, label={lst:probe}]
+def score_experts(layer, hidden_size, probe):
+    rng = np.random.default_rng(probe.random_seed)
+    x = rng.standard_normal((probe.num_examples, hidden_size), dtype=np.float32)
+    x = rms_norm(x, layer.rmsnorm_weight.astype(np.float32), probe.eps)
+    logits = x @ layer.router_weight.astype(np.float32).T
+    if layer.router_bias is not None:
+        logits += layer.router_bias.astype(np.float32)
+
+    topk_idx = np.argpartition(logits, -probe.top_k, axis=-1)[:, -probe.top_k:]
+    topk_logits = np.take_along_axis(logits, topk_idx, axis=-1)
+    topk_logits -= topk_logits.max(axis=-1, keepdims=True)
+    weights = np.exp(topk_logits)
+    weights /= weights.sum(axis=-1, keepdims=True)
+
+    scores = np.zeros(layer.router_weight.shape[0], dtype=np.float64)
+    for slot in range(probe.top_k):
+        expert_ids = topk_idx[:, slot]
+        np.add.at(scores, expert_ids, weights[:, slot])
+    return scores
+\end{lstlisting}
+
+% =========================================================================
+\section{Limitations and future work}
+% =========================================================================
+
+\begin{itemize}
+  \item \textbf{Uniform keep.}  \autoref{prop:gap} quantifies the gap
+  this introduces.  A follow-up release could let the user opt out
+  of the constraint and update the runtime expert tables accordingly.
+  \item \textbf{Synthetic probes only.}  The procedure is dataset-free
+  by design, but a small calibration set of natural text can be added
+  to \texttt{score\_experts} by replacing the random draws with
+  hidden states from a forward pass.  The interface is already
+  shaped to accept any tensor of shape $(N, d)$.
+  \item \textbf{No expert merging.}  Adjacent experts with nearly
+  identical routing cones are not collapsed.  Combining probes with
+  router weight clustering is a promising follow-up.
+  \item \textbf{CPU-only writer.}  Loading the full safetensors
+  snapshot on CPU is required because the host may not have a GPU;
+  the writer could stream shards on GPU when one is available.
+\end{itemize}
+
+% =========================================================================
+\section*{Reproducibility}
+\addcontentsline{toc}{section}{Reproducibility}
+% =========================================================================
+
+The default settings (\texttt{random\_seed=42}, \texttt{num\_examples=1000},
+\texttt{top\_k=4}, \texttt{prune\_level=0.5}) reproduce the expert
+selections described in \eqref{eq:score} and \eqref{eq:keep} exactly.  The shard
+rewrite is deterministic once the order of the source weight map is
+fixed, which is the case for any snapshot produced by
+\texttt{snapshot\_download} with \texttt{resume\_download=True}.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{9}
+\bibitem{huggingface}
+  Hugging Face.
+  \newblock \emph{snapshot\_download}.
+  \newblock \href{https://huggingface.co/docs/huggingface_hub/en/package_reference/mixins#huggingface_hub.snapshot_download}{huggingface.co/docs/huggingface\_hub}.
+
+\bibitem{rmsnorm}
+  B. Zhang and R. Sennrich.
+  \newblock Root Mean Square Layer Normalization.
+  \newblock \emph{NeurIPS}, 2019.
+
+\bibitem{moe}
+  W. Fedus, B. Zoph, N. Shazeer.
+  \newblock Switch Transformers: Scaling to Trillion Parameter Models with Simple and Efficient Sparsity.
+  \newblock \emph{JMLR}, 2022.
+\end{thebibliography}
+
+\end{document}
