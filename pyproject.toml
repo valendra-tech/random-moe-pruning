@@ -1,0 +1,61 @@
+[project]
+name = "random-moe-pruning"
+version = "0.1.0"
+description = "Prune MoE Hugging Face checkpoints by random probe selection."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Valendra", email = "hello@valendra.io" },
+]
+keywords = ["moe", "pruning", "huggingface", "transformers", "gpt-oss"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "click>=8.1",
+    "huggingface-hub>=0.24",
+    "numpy>=1.26",
+    "safetensors>=0.4",
+    "torch>=2.1",
+    "tqdm>=4.66",
+]
+
+[project.urls]
+Homepage = "https://github.com/valendra-tech/random-moe-pruning-"
+Repository = "https://github.com/valendra-tech/random-moe-pruning-"
+Issues = "https://github.com/valendra-tech/random-moe-pruning-/issues"
+
+[project.scripts]
+random-moe-pruning = "random_moe_pruning.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/random_moe_pruning"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
