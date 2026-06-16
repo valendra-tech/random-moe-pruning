@@ -77,6 +77,20 @@ The default regexes target the GPT-OSS layout, but other MoE checkpoints
 can be pruned by overriding `--router-pattern`, `--rmsnorm-pattern` and
 `--expert-pattern` together.
 
+## Released checkpoints
+
+A first pruned artefact of [`openai/gpt-oss-20b`](https://huggingface.co/openai/gpt-oss-20b)
+(50% of the experts per layer) is published as an experimental
+research checkpoint on the Hugging Face Hub:
+
+- [`valendra/gpt-oss-11b-mini`](https://huggingface.co/valendra/gpt-oss-11b-mini)
+
+It is generated with the default configuration of this CLI and is
+intended as a hands-on example of **expert pruning**, the technique
+of dropping a fraction of the experts from every MoE layer while
+leaving the rest of the architecture (router, attention, embeddings,
+tokenizer, chat template) untouched.
+
 ## Development
 
 ```bash

@@ -36,7 +36,7 @@ def _scan_tensor_keys(model_path: str, patterns: list[re.Pattern[str]]) -> Layer
         shard_path = os.path.join(model_path, shard)
         log.info("Scanning %s", shard_path)
         with safe_open(shard_path, framework="pt", device="cpu") as handle:
-            for key in handle:
+            for key in handle.keys():
                 for pattern in patterns:
                     match = pattern.match(key)
                     if match is None:

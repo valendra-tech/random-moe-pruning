@@ -167,7 +167,7 @@ def write_pruned_model(
         log.info("Rewriting shard: %s", shard_name)
         tensors_out: dict[str, torch.Tensor] = {}
         with safe_open(in_path, framework="pt", device="cpu") as handle:
-            for tensor_name in handle:
+            for tensor_name in handle.keys():
                 tensor = handle.get_tensor(tensor_name)
                 is_prunable = bool(
                     router_pattern.match(tensor_name)
