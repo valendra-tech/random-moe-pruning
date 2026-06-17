@@ -80,6 +80,7 @@ def select_experts(
             )
         scores = score_experts(layer, hidden_size, probe)
         keep_idx = np.sort(np.argsort(scores)[-keep_count:])
-        experts_keep[layer_index] = keep_idx.tolist()
-        expert_scores[layer_index] = scores
+        layer_id = layer.layer_id if layer.layer_id >= 0 else layer_index
+        experts_keep[layer_id] = keep_idx.tolist()
+        expert_scores[layer_id] = scores
     return experts_keep, expert_scores

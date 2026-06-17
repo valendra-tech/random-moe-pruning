@@ -19,6 +19,7 @@ from random_moe_pruning.probes import (
 )
 from random_moe_pruning.writer import (
     prune_tensor,
+    update_config_for_pruned_experts,
     validate_uniform_keep,
 )
 
@@ -47,6 +48,7 @@ def test_score_experts_aggregates_softmax_weights():
     hidden = 8
     num_experts = 5
     layer = LayerTensors(
+        layer_id=0,
         router_weight=np.zeros((num_experts, hidden), dtype=np.float32),
         router_bias=None,
         rmsnorm_weight=np.ones(hidden, dtype=np.float32),
@@ -63,6 +65,7 @@ def test_select_experts_keeps_expected_count():
     hidden = 4
     layers = [
         LayerTensors(
+            layer_id=0,
             router_weight=np.eye(8, hidden, dtype=np.float32),
             router_bias=None,
             rmsnorm_weight=np.ones(hidden, dtype=np.float32),
@@ -79,6 +82,7 @@ def test_select_experts_rejects_unsafe_prune_level():
     hidden = 4
     layers = [
         LayerTensors(
+            layer_id=0,
             router_weight=np.eye(2, hidden, dtype=np.float32),
             router_bias=None,
             rmsnorm_weight=np.ones(hidden, dtype=np.float32),
@@ -140,3 +144,123 @@ def test_prune_tensor_passes_through_unmatched():
         cfg.expert_re,
     )
     assert out is tensor
+
+
+def test_update_config_uses_cli_top_k_and_key(tmp_path):
+    model_dir = tmp_path / "model"
+    out_dir = tmp_path / "out"
+    model_dir.mkdir()
+    out_dir.mkdir()
+
+    config_path = model_dir / "config.json"
+    config_path.write_text(
+        """
+{
+  "num_local_experts": 16,
+  "num_experts_per_tok": 8
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    update_config_for_pruned_experts(
+        model_path=str(model_dir),
+        output_dir=str(out_dir),
+        keep_experts=8,
+        top_k=4,
+        experts_per_token_key="num_experts_per_tok",
+    )
+
+    updated = (out_dir / "config.json").read_text(encoding="utf-8")
+    assert '"num_local_experts": 8' in updated
+    assert '"num_experts_per_tok": 4' in updated
+
+
+def test_update_config_uses_cli_num_experts_key(tmp_path):
+    model_dir = tmp_path / "model"
+    out_dir = tmp_path / "out"
+    model_dir.mkdir()
+    out_dir.mkdir()
+
+    config_path = model_dir / "config.json"
+    config_path.write_text(
+        """
+{
+  "custom_total_experts": 20,
+  "num_experts_per_tok": 4
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    update_config_for_pruned_experts(
+        model_path=str(model_dir),
+        output_dir=str(out_dir),
+        keep_experts=10,
+        top_k=4,
+        experts_per_token_key="num_experts_per_tok",
+        num_experts_key="custom_total_experts",
+    )
+
+    updated = (out_dir / "config.json").read_text(encoding="utf-8")
+    assert '"custom_total_experts": 10' in updated
+
+
+def test_update_config_supports_deepseek_expert_count_key(tmp_path):
+    model_dir = tmp_path / "model"
+    out_dir = tmp_path / "out"
+    model_dir.mkdir()
+    out_dir.mkdir()
+
+    config_path = model_dir / "config.json"
+    config_path.write_text(
+        """
+{
+  "n_routed_experts": 256,
+  "num_experts_per_tok": 6
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    update_config_for_pruned_experts(
+        model_path=str(model_dir),
+        output_dir=str(out_dir),
+        keep_experts=128,
+        top_k=6,
+        experts_per_token_key="num_experts_per_tok",
+    )
+
+    updated = (out_dir / "config.json").read_text(encoding="utf-8")
+    assert '"n_routed_experts": 128' in updated
+    assert '"num_experts_per_tok": 6' in updated
+
+
+def test_update_config_does_not_write_top_k_into_expert_count_key(tmp_path):
+    model_dir = tmp_path / "model"
+    out_dir = tmp_path / "out"
+    model_dir.mkdir()
+    out_dir.mkdir()
+
+    config_path = model_dir / "config.json"
+    config_path.write_text(
+        """
+{
+  "n_routed_experts": 256,
+  "num_experts_per_tok": 6
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    update_config_for_pruned_experts(
+        model_path=str(model_dir),
+        output_dir=str(out_dir),
+        keep_experts=128,
+        top_k=6,
+        experts_per_token_key="n_routed_experts",
+    )
+
+    updated = (out_dir / "config.json").read_text(encoding="utf-8")
+    assert '"n_routed_experts": 128' in updated
+    assert '"num_experts_per_tok": 6' in updated

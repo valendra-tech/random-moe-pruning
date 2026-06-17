@@ -43,3 +43,23 @@ def test_load_layer_tensors_reads_safetensors_shard(tmp_path: Path) -> None:
     assert layers[1].router_weight.shape == (6, 4)
     assert layers[0].router_bias is not None
     assert layers[0].rmsnorm_weight.shape == (4,)
+
+
+def test_load_layer_tensors_allows_missing_router_bias(tmp_path: Path) -> None:
+    shard = tmp_path / "model-00000-of-00001.safetensors"
+    hidden, num_experts = 4, 6
+    tensors: dict[str, torch.Tensor] = {
+        "model.layers.0.mlp.router.weight": torch.zeros(num_experts, hidden),
+        "model.layers.0.post_attention_layernorm.weight": torch.ones(hidden),
+    }
+    save_file(tensors, str(shard))
+
+    layers = load_layer_tensors(
+        str(tmp_path),
+        re.compile(DEFAULT_ROUTER_RE),
+        re.compile(DEFAULT_RMSNORM_RE),
+    )
+
+    assert len(layers) == 1
+    assert layers[0].layer_id == 0
+    assert layers[0].router_bias is None

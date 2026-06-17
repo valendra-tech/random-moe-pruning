@@ -14,6 +14,22 @@ from safetensors.torch import save_file
 
 log = logging.getLogger(__name__)
 
+EXPERT_COUNT_KEYS = (
+    "num_local_experts",
+    "num_experts",
+    "n_experts",
+    "n_routed_experts",
+    "num_routed_experts",
+)
+
+TOP_K_KEYS = (
+    "num_experts_per_tok",
+    "num_experts_per_token",
+    "top_k",
+    "n_activated_experts",
+    "num_activated_experts",
+)
+
 SKIP_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth")
 SKIP_NAMES = {
     "model.safetensors.index.json",
@@ -41,6 +57,9 @@ def update_config_for_pruned_experts(
     model_path: str,
     output_dir: str,
     keep_experts: int,
+    top_k: int | None = None,
+    experts_per_token_key: str | None = None,
+    num_experts_key: str | None = None,
 ) -> None:
     """Patch ``config.json`` with the new expert count."""
     config_path = os.path.join(model_path, "config.json")
@@ -48,26 +67,41 @@ def update_config_for_pruned_experts(
     with open(config_path, encoding="utf-8") as handle:
         config = json.load(handle)
 
-    old_num_experts = (
-        config.get("num_local_experts")
-        or config.get("num_experts")
-        or config.get("n_experts")
-    )
-    if old_num_experts is None:
-        raise ValueError("Could not find num_local_experts/num_experts in config.json")
+    expert_count_keys = [*EXPERT_COUNT_KEYS]
+    if num_experts_key and num_experts_key not in expert_count_keys:
+        expert_count_keys.insert(0, num_experts_key)
 
-    top_k = (
-        config.get("num_experts_per_tok")
-        or config.get("num_experts_per_token")
-        or config.get("top_k")
-        or 1
-    )
-    if keep_experts < top_k:
+    old_num_experts = next((config[key] for key in expert_count_keys if key in config), None)
+    if old_num_experts is None:
         raise ValueError(
-            f"Invalid pruned config: keep_experts={keep_experts} < top_k={top_k}"
+            "Could not find expert-count key in config.json. "
+            f"Tried: {', '.join(expert_count_keys)}"
         )
 
-    for key in ("num_local_experts", "num_experts", "n_experts"):
+    inferred_top_k = next((config[key] for key in TOP_K_KEYS if key in config), 1)
+    effective_top_k = top_k if top_k is not None else inferred_top_k
+    if top_k is not None:
+        if experts_per_token_key:
+            if experts_per_token_key in expert_count_keys:
+                log.warning(
+                    "Skipping update of %s with top_k=%s because it is an expert-count key.",
+                    experts_per_token_key,
+                    top_k,
+                )
+            else:
+                config[experts_per_token_key] = top_k
+        for key in TOP_K_KEYS:
+            if key in config:
+                config[key] = top_k
+    if keep_experts < effective_top_k:
+        raise ValueError(
+            "Invalid pruned config: "
+            f"keep_experts={keep_experts} < top_k={effective_top_k}"
+        )
+
+    if num_experts_key:
+        config[num_experts_key] = keep_experts
+    for key in expert_count_keys:
         if key in config:
             config[key] = keep_experts
 
@@ -81,7 +115,7 @@ def update_config_for_pruned_experts(
         "Updated config: num_experts %s -> %s, top_k=%s",
         old_num_experts,
         keep_experts,
-        top_k,
+        effective_top_k,
     )
 
 
@@ -142,6 +176,9 @@ def write_pruned_model(
     experts_keep: dict[int, list[int]],
     router_pattern: re.Pattern[str],
     expert_pattern: re.Pattern[str],
+    top_k: int | None = None,
+    experts_per_token_key: str | None = None,
+    num_experts_key: str | None = None,
 ) -> str:
     """Materialize the pruned model on disk and return ``output_dir``."""
     keep_experts = validate_uniform_keep(experts_keep)
@@ -151,7 +188,14 @@ def write_pruned_model(
 
     os.makedirs(output_dir, exist_ok=True)
     copy_non_weight_files(model_path, output_dir)
-    update_config_for_pruned_experts(model_path, output_dir, keep_experts)
+    update_config_for_pruned_experts(
+        model_path=model_path,
+        output_dir=output_dir,
+        keep_experts=keep_experts,
+        top_k=top_k,
+        experts_per_token_key=experts_per_token_key,
+        num_experts_key=num_experts_key,
+    )
 
     index = load_index(model_path)
     weight_map = index["weight_map"]

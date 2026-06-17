@@ -97,6 +97,11 @@ def _configure_logging(verbose: bool) -> None:
     help="Config key holding the experts-per-token value.",
 )
 @click.option(
+    "--num-experts-key",
+    default=None,
+    help="Config key holding the total routed experts (overrides auto-detection).",
+)
+@click.option(
     "-v",
     "--verbose",
     is_flag=True,
@@ -114,6 +119,7 @@ def main(
     num_examples: int,
     top_k: int,
     experts_per_token_key: str,
+    num_experts_key: str | None,
     verbose: bool,
 ) -> None:
     """Prune an MoE Hugging Face checkpoint by random probe selection."""
@@ -130,6 +136,7 @@ def main(
         num_examples=num_examples,
         top_k=top_k,
         experts_per_token_key=experts_per_token_key,
+        num_experts_key=num_experts_key,
     )
     prune(config)
     return None

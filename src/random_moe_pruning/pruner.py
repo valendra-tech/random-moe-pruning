@@ -57,6 +57,8 @@ def prune(config: PrunerConfig) -> str:
     layers = load_layer_tensors(model_path, config.router_re, config.rmsnorm_re)
     hidden_size = layers[0].router_weight.shape[1]
     _load_config_field(model_path, config.experts_per_token_key)
+    if config.num_experts_key:
+        _load_config_field(model_path, config.num_experts_key)
 
     probe = ProbeConfig(
         num_examples=config.num_examples,
@@ -72,4 +74,7 @@ def prune(config: PrunerConfig) -> str:
         experts_keep=experts_keep,
         router_pattern=config.router_re,
         expert_pattern=config.expert_re,
+        top_k=config.top_k,
+        experts_per_token_key=config.experts_per_token_key,
+        num_experts_key=config.num_experts_key,
     )
