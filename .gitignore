@@ -17,3 +17,4 @@ pruned_model/
 
 # uv lock lives outside the repo to keep PR diffs small
 uv.lock
+pruned_model*

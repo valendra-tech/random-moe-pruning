@@ -85,10 +85,9 @@ def _configure_logging(verbose: bool) -> None:
 )
 @click.option(
     "--top-k",
-    default=4,
-    show_default=True,
+    default=None,
     type=int,
-    help="Activated experts per token (router top-k).",
+    help="Activated experts per token (router top-k). If not set, reads from config.json.",
 )
 @click.option(
     "--experts-per-token-key",
@@ -117,7 +116,7 @@ def main(
     expert_pattern: str,
     random_seed: int,
     num_examples: int,
-    top_k: int,
+    top_k: int | None,
     experts_per_token_key: str,
     num_experts_key: str | None,
     verbose: bool,

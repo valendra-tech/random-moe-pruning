@@ -56,13 +56,16 @@ def prune(config: PrunerConfig) -> str:
 
     layers = load_layer_tensors(model_path, config.router_re, config.rmsnorm_re)
     hidden_size = layers[0].router_weight.shape[1]
-    _load_config_field(model_path, config.experts_per_token_key)
+    experts_per_token = _load_config_field(model_path, config.experts_per_token_key)
     if config.num_experts_key:
         _load_config_field(model_path, config.num_experts_key)
 
+    effective_top_k = config.top_k if config.top_k is not None else experts_per_token
+    log.info("Using top_k=%d for expert scoring", effective_top_k)
+
     probe = ProbeConfig(
         num_examples=config.num_examples,
-        top_k=config.top_k,
+        top_k=effective_top_k,
         prune_level=config.prune_level,
         random_seed=config.random_seed,
     )

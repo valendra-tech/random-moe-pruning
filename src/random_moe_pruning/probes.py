@@ -67,12 +67,16 @@ def select_experts(
     probe: ProbeConfig,
 ) -> tuple[dict[int, list[int]], dict[int, np.ndarray]]:
     """Pick the experts to keep per layer based on random-probe scores."""
+    import logging
+    log = logging.getLogger(__name__)
     experts_keep: dict[int, list[int]] = {}
     expert_scores: dict[int, np.ndarray] = {}
 
     for layer_index, layer in enumerate(layers):
         num_experts = layer.router_weight.shape[0]
         keep_count = int(np.ceil(num_experts * (1.0 - probe.prune_level)))
+        if layer_index == 0:
+            log.info("Pruning config: num_experts=%d, prune_level=%.2f → keep_count=%d", num_experts, probe.prune_level, keep_count)
         if keep_count < probe.top_k:
             raise ValueError(
                 f"Layer {layer_index}: keep_count={keep_count} < top_k={probe.top_k}."

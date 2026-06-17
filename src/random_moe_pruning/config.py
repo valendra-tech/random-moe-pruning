@@ -21,7 +21,7 @@ class PrunerConfig:
     workdir: str = ".workspace/"
     random_seed: int = 42
     num_examples: int = 1000
-    top_k: int = 4
+    top_k: int | None = None
     experts_per_token_key: str = "num_experts_per_tok"
     num_experts_key: str | None = None
     router_pattern: str = DEFAULT_ROUTER_RE
@@ -39,7 +39,7 @@ class PrunerConfig:
             )
         if self.num_examples <= 0:
             raise ValueError("num_examples must be positive")
-        if self.top_k <= 0:
+        if self.top_k is not None and self.top_k <= 0:
             raise ValueError("top_k must be positive")
         object.__setattr__(self, "router_re", re.compile(self.router_pattern))
         object.__setattr__(self, "rmsnorm_re", re.compile(self.rmsnorm_pattern))
