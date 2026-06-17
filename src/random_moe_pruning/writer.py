@@ -134,8 +134,8 @@ def prune_tensor(
     experts_keep: dict[int, list[int]],
     router_pattern: re.Pattern[str],
     expert_pattern: re.Pattern[str],
-) -> torch.Tensor:
-    """Slice the expert dimension of router or expert tensors."""
+) -> torch.Tensor | None:
+    """Prune router tensors or drop per-expert tensors that are not retained."""
     router_match = router_pattern.match(name)
     if router_match is not None:
         layer_id = int(router_match.group(1))
@@ -145,6 +145,11 @@ def prune_tensor(
     expert_match = expert_pattern.match(name)
     if expert_match is not None:
         layer_id = int(expert_match.group(1))
+        expert_suffix = name.split(".experts.", 1)[1] if ".experts." in name else ""
+        expert_id_text = expert_suffix.split(".", 1)[0]
+        if expert_id_text.isdigit():
+            expert_id = int(expert_id_text)
+            return tensor if expert_id in experts_keep[layer_id] else None
         idx = torch.tensor(experts_keep[layer_id], dtype=torch.long)
         return tensor.index_select(0, idx)
 
@@ -217,13 +222,19 @@ def write_pruned_model(
                     router_pattern.match(tensor_name)
                     or expert_pattern.match(tensor_name)
                 )
-                tensors_out[tensor_name] = prune_tensor(
+                pruned_tensor = prune_tensor(
                     name=tensor_name,
                     tensor=tensor,
                     experts_keep=experts_keep,
                     router_pattern=router_pattern,
                     expert_pattern=expert_pattern,
                 )
+                if pruned_tensor is None:
+                    total_tensors += 1
+                    if is_prunable:
+                        pruned_tensors += 1
+                    continue
+                tensors_out[tensor_name] = pruned_tensor
                 new_weight_map[tensor_name] = shard_name
                 total_tensors += 1
                 if is_prunable:

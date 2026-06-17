@@ -133,6 +133,32 @@ def test_prune_tensor_uses_expert_pattern():
     assert pruned[1].eq(9).all()
 
 
+def test_prune_tensor_keeps_named_expert_tensor_when_id_is_retained():
+    cfg = PrunerConfig()
+    tensor = torch.arange(6).reshape(3, 2)
+    pruned = prune_tensor(
+        "model.layers.1.mlp.experts.3.gate_up_proj.weight",
+        tensor,
+        {1: [1, 3]},
+        cfg.router_re,
+        cfg.expert_re,
+    )
+    assert pruned is tensor
+
+
+def test_prune_tensor_drops_named_expert_tensor_when_id_is_pruned():
+    cfg = PrunerConfig()
+    tensor = torch.arange(6).reshape(3, 2)
+    pruned = prune_tensor(
+        "model.layers.1.mlp.experts.2.gate_up_proj.weight",
+        tensor,
+        {1: [1, 3]},
+        cfg.router_re,
+        cfg.expert_re,
+    )
+    assert pruned is None
+
+
 def test_prune_tensor_passes_through_unmatched():
     cfg = PrunerConfig()
     tensor = torch.ones(2, 2)
