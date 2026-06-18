@@ -128,6 +128,21 @@ def load_index(model_path: str) -> dict:
         return json.load(handle)
 
 
+def _match_expert_tensor_name(
+    name: str,
+    expert_pattern: re.Pattern[str],
+) -> tuple[int, str, str, str] | None:
+    """Return layer id and expert-name components for expert tensors."""
+    expert_match = expert_pattern.match(name)
+    if expert_match is None or ".experts." not in name:
+        return None
+
+    layer_id = int(expert_match.group(1))
+    expert_prefix, expert_suffix = name.split(".experts.", 1)
+    expert_id_text, dot, remainder = expert_suffix.partition(".")
+    return layer_id, expert_prefix, expert_id_text, remainder if dot else ""
+
+
 def prune_tensor(
     name: str,
     tensor: torch.Tensor,
@@ -142,11 +157,9 @@ def prune_tensor(
         idx = torch.tensor(experts_keep[layer_id], dtype=torch.long)
         return tensor.index_select(0, idx)
 
-    expert_match = expert_pattern.match(name)
-    if expert_match is not None:
-        layer_id = int(expert_match.group(1))
-        expert_suffix = name.split(".experts.", 1)[1] if ".experts." in name else ""
-        expert_id_text = expert_suffix.split(".", 1)[0]
+    expert_info = _match_expert_tensor_name(name, expert_pattern)
+    if expert_info is not None:
+        layer_id, _, expert_id_text, _ = expert_info
         if expert_id_text.isdigit():
             expert_id = int(expert_id_text)
             return tensor if expert_id in experts_keep[layer_id] else None
@@ -154,6 +167,26 @@ def prune_tensor(
         return tensor.index_select(0, idx)
 
     return tensor
+
+
+def _rename_pruned_tensor(
+    name: str,
+    expert_pattern: re.Pattern[str],
+    expert_id_remap: dict[int, dict[int, int]],
+) -> str:
+    """Compact retained named experts so checkpoint ids match pruned router rows."""
+    expert_info = _match_expert_tensor_name(name, expert_pattern)
+    if expert_info is None:
+        return name
+
+    layer_id, expert_prefix, expert_id_text, remainder = expert_info
+    if not expert_id_text.isdigit():
+        return name
+
+    new_expert_id = expert_id_remap[layer_id][int(expert_id_text)]
+    if remainder:
+        return f"{expert_prefix}.experts.{new_expert_id}.{remainder}"
+    return f"{expert_prefix}.experts.{new_expert_id}"
 
 
 def validate_uniform_keep(experts_keep: dict[int, list[int]]) -> int:
@@ -190,6 +223,10 @@ def write_pruned_model(
     log.info(
         "Writing pruned model with %s experts/layer to %s", keep_experts, output_dir
     )
+    expert_id_remap = {
+        layer_id: {expert_id: new_id for new_id, expert_id in enumerate(keep_ids)}
+        for layer_id, keep_ids in experts_keep.items()
+    }
 
     os.makedirs(output_dir, exist_ok=True)
     copy_non_weight_files(model_path, output_dir)
@@ -234,8 +271,13 @@ def write_pruned_model(
                     if is_prunable:
                         pruned_tensors += 1
                     continue
-                tensors_out[tensor_name] = pruned_tensor
-                new_weight_map[tensor_name] = shard_name
+                output_name = _rename_pruned_tensor(
+                    tensor_name,
+                    expert_pattern=expert_pattern,
+                    expert_id_remap=expert_id_remap,
+                )
+                tensors_out[output_name] = pruned_tensor
+                new_weight_map[output_name] = shard_name
                 total_tensors += 1
                 if is_prunable:
                     pruned_tensors += 1

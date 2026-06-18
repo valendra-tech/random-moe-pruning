@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 import numpy as np
 import pytest
 import torch
+from safetensors import safe_open
+from safetensors.torch import save_file
 
 from random_moe_pruning.config import PrunerConfig
 from random_moe_pruning.loader import LayerTensors
@@ -21,6 +24,7 @@ from random_moe_pruning.writer import (
     prune_tensor,
     update_config_for_pruned_experts,
     validate_uniform_keep,
+    write_pruned_model,
 )
 
 
@@ -157,6 +161,92 @@ def test_prune_tensor_drops_named_expert_tensor_when_id_is_pruned():
         cfg.expert_re,
     )
     assert pruned is None
+
+
+def test_write_pruned_model_reindexes_named_expert_tensors(tmp_path):
+    model_dir = tmp_path / "model"
+    out_dir = tmp_path / "out"
+    model_dir.mkdir()
+
+    (model_dir / "config.json").write_text(
+        """
+{
+  "n_routed_experts": 4,
+  "num_experts_per_tok": 2
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    shard_name = "model-00001-of-00001.safetensors"
+    tensors = {
+        "model.layers.0.mlp.router.weight": torch.tensor(
+            [[0.0, 0.0], [1.0, 1.0], [2.0, 2.0], [3.0, 3.0]],
+            dtype=torch.float32,
+        ),
+        "model.layers.0.mlp.experts.0.gate_up_proj.weight": torch.full(
+            (2, 2), 10.0
+        ),
+        "model.layers.0.mlp.experts.1.gate_up_proj.weight": torch.full(
+            (2, 2), 11.0
+        ),
+        "model.layers.0.mlp.experts.2.gate_up_proj.weight": torch.full(
+            (2, 2), 12.0
+        ),
+        "model.layers.0.mlp.experts.3.gate_up_proj.weight": torch.full(
+            (2, 2), 13.0
+        ),
+        "model.embed_tokens.weight": torch.arange(4, dtype=torch.float32),
+    }
+    save_file(tensors, str(model_dir / shard_name))
+    (model_dir / "model.safetensors.index.json").write_text(
+        json.dumps(
+            {
+                "metadata": {},
+                "weight_map": {name: shard_name for name in tensors},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = PrunerConfig()
+    write_pruned_model(
+        model_path=str(model_dir),
+        output_dir=str(out_dir),
+        experts_keep={0: [1, 3]},
+        router_pattern=cfg.router_re,
+        expert_pattern=cfg.expert_re,
+        top_k=2,
+        experts_per_token_key="num_experts_per_tok",
+    )
+
+    with safe_open(str(out_dir / shard_name), framework="pt", device="cpu") as handle:
+        assert set(handle.keys()) == {
+            "model.embed_tokens.weight",
+            "model.layers.0.mlp.experts.0.gate_up_proj.weight",
+            "model.layers.0.mlp.experts.1.gate_up_proj.weight",
+            "model.layers.0.mlp.router.weight",
+        }
+        assert handle.get_tensor("model.layers.0.mlp.router.weight").tolist() == [
+            [1.0, 1.0],
+            [3.0, 3.0],
+        ]
+        assert handle.get_tensor(
+            "model.layers.0.mlp.experts.0.gate_up_proj.weight"
+        ).eq(11).all()
+        assert handle.get_tensor(
+            "model.layers.0.mlp.experts.1.gate_up_proj.weight"
+        ).eq(13).all()
+
+    out_index = json.loads(
+        (out_dir / "model.safetensors.index.json").read_text(encoding="utf-8")
+    )
+    assert sorted(out_index["weight_map"].keys()) == [
+        "model.embed_tokens.weight",
+        "model.layers.0.mlp.experts.0.gate_up_proj.weight",
+        "model.layers.0.mlp.experts.1.gate_up_proj.weight",
+        "model.layers.0.mlp.router.weight",
+    ]
 
 
 def test_prune_tensor_passes_through_unmatched():
