@@ -10,6 +10,39 @@ DEFAULT_ROUTER_RE = r"^model\.layers\.(\d+)\.mlp\.router\.(weight|bias)$"
 DEFAULT_RMSNORM_RE = r"^model\.layers\.(\d+)\.post_attention_layernorm\.weight$"
 DEFAULT_EXPERT_RE = r"^model\.layers\.(\d+)\.mlp\.experts\..*$"
 
+ALLOW_PATTERNS: list[str] = [
+    "*.safetensors",
+    "model.safetensors.index.json",
+    "config.json",
+    "generation_config.json",
+    "tokenizer*",
+    "special_tokens_map.json",
+    "chat_template.jinja",
+    "*.py",
+    "*.txt",
+    "*.json",
+    "*.model",
+]
+
+IGNORE_PATTERNS: list[str] = [
+    "original/*",
+    "metal/*",
+]
+
+ALLOW_PATTERNS = [
+    "*.safetensors",
+    "model.safetensors.index.json",
+    "config.json",
+    "generation_config.json",
+    "tokenizer*",
+    "special_tokens_map.json",
+    "chat_template.jinja",
+    "*.py",
+    "*.txt",
+    "*.json",
+    "*.model",
+]
+
 
 @dataclass(frozen=True)
 class PrunerConfig:

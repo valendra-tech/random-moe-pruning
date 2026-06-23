@@ -1,0 +1,12 @@
+{
+  "process": {
+    "compiler": "pdflatex"
+  },
+  "sources": [
+    {
+      "filename": "README.tex",
+      "usage": "toplevel"
+    }
+  ],
+  "texlive_version": 2025
+}

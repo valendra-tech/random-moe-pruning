@@ -34,6 +34,7 @@ Issues = "https://github.com/valendra-tech/random-moe-pruning-/issues"
 
 [project.scripts]
 random-moe-pruning = "random_moe_pruning.cli:main"
+random-moe-pruning-eval-http = "random_moe_pruning.http_eval_cli:main"
 
 [build-system]
 requires = ["hatchling"]

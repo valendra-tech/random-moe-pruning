@@ -23,7 +23,7 @@
   citecolor=blue!60!black,
   urlcolor=blue!60!black,
   pdftitle={Random MoE Pruning: a mathematical walkthrough},
-  pdfauthor={Valendra},
+  pdfauthor={José Carlos García Ortega; Marta Barea Sepúlveda, PhD; Valendra Tech SL},
 }
 
 % --- Notation shortcuts ---------------------------------------------------
@@ -65,9 +65,11 @@
 
 \title{\textbf{Random MoE Pruning}\\[0.3em]
        \large A mathematical walkthrough of the design choices}
-\author{Valendra\\
+\author{José Carlos García Ortega\\
+  Marta Barea Sepúlveda, PhD\\
+  \small Valendra Tech SL\\
         \small\texttt{valendra-tech/random-moe-pruning}}
-\date{\today}
+\date{June 2026}
 
 \begin{document}
 \maketitle
@@ -85,6 +87,11 @@ real-data behaviour, and (iii) why the same number of experts per
 layer is a useful invariant for a first public release.
 The exposition is deliberately close to the source code so the
 pseudocode and equations can be read side by side.
+The current implementation is best understood as a pruning method for
+the GPT-OSS family, in particular GPT-OSS-120B and smaller siblings
+that share the same score-routed top-$k$ MoE layout.  The mathematical
+story below therefore describes the assumptions that hold for that
+family, not a guarantee for arbitrary MoE checkpoints.
 \end{abstract}
 
 \tableofcontents
@@ -135,6 +142,18 @@ drop-in replacement for the original architecture.  In particular we
 require $|\Keep_\ell| \ge k$ so that the top-$k$ routing is still
 feasible.
 
+\paragraph{Scope of the current implementation.}
+These assumptions match GPT-OSS checkpoints well, including
+GPT-OSS-120B and GPT-OSS-20B.  They do \emph{not} automatically extend
+to every MoE model on the Hugging Face Hub.  In practice, regex
+overrides solve tensor naming only; they do not adapt the pruning logic
+to alternative routing semantics.  For example, DeepSeek-V4-Flash uses
+hash-routed tables through \texttt{gate.tid2eid}, DeepSeek-V3.2 uses a
+grouped routing path with \texttt{e\_score\_correction\_bias}, and
+MiniMax-M2.7 has a related but still model-specific gate/scoring path.
+Those layouts require dedicated handling if the resulting checkpoint is
+expected to remain reliable after pruning.
+
 % =========================================================================
 \section{Why a single expert count per layer}
 % =========================================================================
@@ -172,7 +191,8 @@ $\eta_\ell \in [0,1)$, so
 \]
 \end{proof}
 
-For GPT-OSS-20B the expert counts are constant across layers, so
+For the GPT-OSS family, including GPT-OSS-20B and GPT-OSS-120B, the
+expert counts are constant across layers, so
 $\sigma_E = 0$ and the per-layer keep count is identical.  Imposing
 $|\Keep_\ell| = \Keep$ for all $\ell$ therefore loses no flexibility
 for the model's primary target, and keeps the writer in
@@ -409,7 +429,8 @@ total parameter count of layer $\ell$.}
 \label{tab:complexity}
 \end{table}
 
-For GPT-OSS-20B, $L = 24$, $E = 32$, $d = 2880$, $k = 4$ and
+For GPT-OSS-20B, used here as a smaller public example from the same
+family as GPT-OSS-120B, $L = 24$, $E = 32$, $d = 2880$, $k = 4$ and
 $N = 1000$, the scoring step finishes in a few seconds on a single
 CPU thread and dominates only the lightweight input parsing.  The
 shard rewrite is bandwidth-bound and runs at the speed of the local
@@ -492,6 +513,14 @@ def score_experts(layer, hidden_size, probe):
   \item \textbf{CPU-only writer.}  Loading the full safetensors
   snapshot on CPU is required because the host may not have a GPU;
   the writer could stream shards on GPU when one is available.
+  \item \textbf{Post-pruning SFT.}  A natural next step is to run SFT
+  after pruning, using the full model as the teacher, so the smaller
+  checkpoint can recover part of the behavioural loss introduced by
+  expert removal.
+  \item \textbf{Broader architectural coverage.}  The current method is
+  strongest on GPT-OSS-style layouts.  Extending it to additional MoE
+  architectures requires model-specific support for their routing and
+  checkpoint conventions.
 \end{itemize}
 
 % =========================================================================

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
@@ -11,6 +12,8 @@ import shutil
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
+
+from random_moe_pruning.config import ALLOW_PATTERNS, IGNORE_PATTERNS
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +40,16 @@ SKIP_NAMES = {
 }
 
 
+def _name_matches_any(name: str, patterns: list[str]) -> bool:
+    """Return True if *name* matches any glob pattern."""
+    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
+
+
+def _is_ignored(name: str, patterns: list[str]) -> bool:
+    """Return True if *name* should be skipped (matches an ignore pattern)."""
+    return any(fnmatch.fnmatch(name, pat) for pat in patterns)
+
+
 def copy_non_weight_files(model_path: str, output_dir: str) -> None:
     """Copy tokenizer, config and code files, skipping the heavy shards."""
     os.makedirs(output_dir, exist_ok=True)
@@ -44,6 +57,10 @@ def copy_non_weight_files(model_path: str, output_dir: str) -> None:
         src = os.path.join(model_path, name)
         dst = os.path.join(output_dir, name)
         if name in SKIP_NAMES or name.endswith(SKIP_SUFFIXES):
+            continue
+        if _is_ignored(name, IGNORE_PATTERNS):
+            continue
+        if not _name_matches_any(name, ALLOW_PATTERNS):
             continue
         if os.path.isdir(src):
             if os.path.exists(dst):

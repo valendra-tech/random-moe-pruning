@@ -8,7 +8,7 @@ import os
 
 from huggingface_hub import snapshot_download
 
-from random_moe_pruning.config import PrunerConfig
+from random_moe_pruning.config import ALLOW_PATTERNS, IGNORE_PATTERNS, PrunerConfig
 from random_moe_pruning.loader import load_layer_tensors
 from random_moe_pruning.probes import ProbeConfig, select_experts
 from random_moe_pruning.writer import write_pruned_model
@@ -27,6 +27,8 @@ def _download_model(hf_repo: str, workdir: str) -> str:
         local_dir=model_dir,
         local_dir_use_symlinks=False,
         resume_download=True,
+        allow_patterns=ALLOW_PATTERNS,
+        ignore_patterns=IGNORE_PATTERNS,
     )
     log.info("Model snapshot ready at %s", local_path)
     return local_path
